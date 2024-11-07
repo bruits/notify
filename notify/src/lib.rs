@@ -166,7 +166,7 @@
 pub use config::{Config, RecursiveMode};
 pub use error::{Error, ErrorKind, Result};
 pub use notify_types::event::{self, Event, EventKind};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 pub(crate) type Receiver<T> = std::sync::mpsc::Receiver<T>;
 pub(crate) type Sender<T> = std::sync::mpsc::Sender<T>;
@@ -287,7 +287,36 @@ pub enum WatcherKind {
     NullWatcher,
 }
 
-type WatchFilterFn = dyn Fn(&Path) -> bool + Send;
+type FilterFn = dyn Fn(&Path) -> bool + Send + Sync;
+/// Path filter to limit what gets watched.
+#[derive(Clone)]
+pub struct WatchFilter(Option<Arc<FilterFn>>);
+
+impl std::fmt::Debug for WatchFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("WatchFilterFn")
+            .field(&self.0.as_ref().map_or("no filter", |_| "filter fn"))
+            .finish()
+    }
+}
+
+impl WatchFilter {
+    /// A filter that accepts any path, use to watch all paths.
+    pub fn accept_all() -> WatchFilter {
+        WatchFilter(None)
+    }
+
+    /// A fitler to limit the paths that get watched.
+    ///
+    /// Only paths for which `filter` returns `true` will be watched.
+    pub fn with_filter(filter: Arc<FilterFn>) -> WatchFilter {
+        WatchFilter(Some(filter))
+    }
+
+    fn should_watch(&self, path: &Path) -> bool {
+        self.0.as_ref().map_or(true, |f| f(path))
+    }
+}
 
 /// Type that can deliver file activity notifications
 ///
@@ -315,7 +344,7 @@ pub trait Watcher {
     /// [#165]: https://github.com/notify-rs/notify/issues/165
     /// [#166]: https://github.com/notify-rs/notify/issues/166
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_filtered(path, recursive_mode, Box::new(|_| true))
+        self.watch_filtered(path, recursive_mode, WatchFilter::accept_all())
     }
 
     /// Begin watching a new path, filtering out sub-paths by name.
@@ -337,7 +366,7 @@ pub trait Watcher {
         &mut self,
         path: &Path,
         recursive_mode: RecursiveMode,
-        watch_filter: Box<WatchFilterFn>,
+        watch_filter: WatchFilter,
     ) -> Result<()>;
 
     /// Stop watching a path.
