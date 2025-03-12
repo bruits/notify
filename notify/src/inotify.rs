@@ -443,6 +443,9 @@ impl EventLoop {
         watch_self: bool,
         watch_filter: WatchFilter,
     ) -> Result<()> {
+        if !watch_filter.should_watch(&path) {
+            return Ok(());
+        }
         let mut watchmask = WatchMask::ATTRIB
             | WatchMask::CREATE
             | WatchMask::OPEN
