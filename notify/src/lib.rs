@@ -412,14 +412,14 @@ pub trait Watcher {
     /// # Examples
     ///
     /// ```
-    /// # use notify::{Watcher, RecursiveMode, Result};
+    /// # use notify::{Watcher, RecursiveMode, Result, WatchFilter};
     /// # use std::path::Path;
     /// # fn main() -> Result<()> {
     /// # let many_paths_to_add = vec![];
     /// let mut watcher = notify::recommended_watcher(|_event| { /* event handler */ })?;
     /// let mut watcher_paths = watcher.paths_mut();
     /// for path in many_paths_to_add {
-    ///     watcher_paths.add(path, RecursiveMode::Recursive)?;
+    ///     watcher_paths.add(path, RecursiveMode::Recursive, WatchFilter::accept_all())?;
     /// }
     /// watcher_paths.commit()?;
     /// # Ok(())
