@@ -5,7 +5,7 @@
 //!
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
-use crate::{bounded, unbounded, BoundSender, Config, Receiver, Sender};
+use crate::{bounded, unbounded, BoundSender, Config, Receiver, Sender, WatchFilter};
 use crate::{event::*, WatcherKind};
 use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
 use std::alloc;
@@ -53,6 +53,7 @@ struct ReadDirectoryRequest {
     handle: HANDLE,
     data: ReadData,
     action_tx: Sender<Action>,
+    watch_filter: WatchFilter,
 }
 
 impl ReadDirectoryRequest {
@@ -62,7 +63,7 @@ impl ReadDirectoryRequest {
 }
 
 enum Action {
-    Watch(PathBuf, RecursiveMode),
+    Watch(PathBuf, RecursiveMode, WatchFilter),
     Unwatch(PathBuf),
     Stop,
     Configure(Config, BoundSender<Result<bool>>),
@@ -127,8 +128,8 @@ impl ReadDirectoryChangesServer {
 
             while let Ok(action) = self.rx.try_recv() {
                 match action {
-                    Action::Watch(path, recursive_mode) => {
-                        let res = self.add_watch(path, recursive_mode.is_recursive());
+                    Action::Watch(path, recursive_mode, watch_filter) => {
+                        let res = self.add_watch(path, recursive_mode.is_recursive(), watch_filter);
                         let _ = self.cmd_tx.send(res);
                     }
                     Action::Unwatch(path) => self.remove_watch(path),
@@ -164,7 +165,12 @@ impl ReadDirectoryChangesServer {
         }
     }
 
-    fn add_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<PathBuf> {
+    fn add_watch(
+        &mut self,
+        path: PathBuf,
+        is_recursive: bool,
+        watch_filter: WatchFilter,
+    ) -> Result<PathBuf> {
         // path must exist and be either a file or directory
         if !path.is_dir() && !path.is_file() {
             return Err(
@@ -236,7 +242,13 @@ impl ReadDirectoryChangesServer {
             complete_sem: semaphore,
         };
         self.watches.insert(path.clone(), ws);
-        start_read(&rd, self.event_handler.clone(), handle, self.tx.clone());
+        start_read(
+            &rd,
+            self.event_handler.clone(),
+            handle,
+            self.tx.clone(),
+            watch_filter,
+        );
         Ok(path)
     }
 
@@ -272,6 +284,7 @@ fn start_read(
     event_handler: Arc<Mutex<dyn EventHandler>>,
     handle: HANDLE,
     action_tx: Sender<Action>,
+    watch_filter: WatchFilter,
 ) {
     let request = Box::new(ReadDirectoryRequest {
         event_handler,
@@ -279,6 +292,7 @@ fn start_read(
         buffer: [0u8; BUF_SIZE as usize],
         data: rd.clone(),
         action_tx,
+        watch_filter,
     });
 
     let flags = FILE_NOTIFY_CHANGE_FILE_NAME
@@ -373,6 +387,7 @@ unsafe extern "system" fn handle_event(
         request.event_handler.clone(),
         request.handle,
         request.action_tx,
+        request.watch_filter.clone(),
     );
 
     // The FILE_NOTIFY_INFORMATION struct has a variable length due to the variable length
@@ -399,10 +414,12 @@ unsafe extern "system" fn handle_event(
 
         // if we are watching a single file, ignore the event unless the path is exactly
         // the watched file
-        let skip = match request.data.file {
+        let mut skip = match request.data.file {
             None => false,
             Some(ref watch_path) => *watch_path != path,
         };
+
+        skip = skip || !request.watch_filter.should_watch(&path);
 
         if !skip {
             log::trace!(
@@ -527,7 +544,12 @@ impl ReadDirectoryChangesWatcher {
         }
     }
 
-    fn watch_inner(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch_inner(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        watch_filter: WatchFilter,
+    ) -> Result<()> {
         let pb = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -540,7 +562,7 @@ impl ReadDirectoryChangesWatcher {
                 "Input watch path is neither a file nor a directory.",
             ));
         }
-        self.send_action_require_ack(Action::Watch(pb.clone(), recursive_mode), &pb)
+        self.send_action_require_ack(Action::Watch(pb.clone(), recursive_mode, watch_filter), &pb)
     }
 
     fn unwatch_inner(&mut self, path: &Path) -> Result<()> {
@@ -568,8 +590,13 @@ impl Watcher for ReadDirectoryChangesWatcher {
         Self::create(event_handler, meta_tx)
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_inner(path, recursive_mode)
+    fn watch_filtered(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        watch_filter: WatchFilter,
+    ) -> Result<()> {
+        self.watch_inner(path, recursive_mode, watch_filter)
     }
 
     fn unwatch(&mut self, path: &Path) -> Result<()> {

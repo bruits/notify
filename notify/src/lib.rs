@@ -165,7 +165,7 @@
 pub use config::{Config, RecursiveMode};
 pub use error::{Error, ErrorKind, Result};
 pub use notify_types::event::{self, Event, EventKind};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 pub(crate) type Receiver<T> = std::sync::mpsc::Receiver<T>;
 pub(crate) type Sender<T> = std::sync::mpsc::Sender<T>;
@@ -293,21 +293,35 @@ pub enum WatcherKind {
     NullWatcher,
 }
 
-/// Providing methods for adding and removing paths to watch.
-///
-/// `Box<dyn PathsMut>` is created by [`Watcher::paths_mut`]. See its documentation for more.
-pub trait PathsMut {
-    /// Add a new path to watch. See [`Watcher::watch`] for more.
-    fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()>;
+type FilterFn = dyn Fn(&Path) -> bool + Send + Sync;
+/// Path filter to limit what gets watched.
+#[derive(Clone)]
+pub struct WatchFilter(Option<Arc<FilterFn>>);
 
-    /// Remove a path from watching. See [`Watcher::unwatch`] for more.
-    fn remove(&mut self, path: &Path) -> Result<()>;
+impl std::fmt::Debug for WatchFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("WatchFilterFn")
+            .field(&self.0.as_ref().map_or("no filter", |_| "filter fn"))
+            .finish()
+    }
+}
 
-    /// Ensure added/removed paths are applied.
+impl WatchFilter {
+    /// A filter that accepts any path, use to watch all paths.
+    pub fn accept_all() -> WatchFilter {
+        WatchFilter(None)
+    }
+
+    /// A fitler to limit the paths that get watched.
     ///
-    /// The behaviour of dropping a [`PathsMut`] without calling [`commit`] is unspecified.
-    /// The implementation is free to ignore the changes or not, and may leave the watcher in a started or stopped state.
-    fn commit(self: Box<Self>) -> Result<()>;
+    /// Only paths for which `filter` returns `true` will be watched.
+    pub fn with_filter(filter: Arc<FilterFn>) -> WatchFilter {
+        WatchFilter(Some(filter))
+    }
+
+    fn should_watch(&self, path: &Path) -> bool {
+        self.0.as_ref().map_or(true, |f| f(path))
+    }
 }
 
 /// Type that can deliver file activity notifications
@@ -335,7 +349,31 @@ pub trait Watcher {
     ///
     /// [#165]: https://github.com/notify-rs/notify/issues/165
     /// [#166]: https://github.com/notify-rs/notify/issues/166
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()>;
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+        self.watch_filtered(path, recursive_mode, WatchFilter::accept_all())
+    }
+
+    /// Begin watching a new path, filtering out sub-paths by name.
+    ///
+    /// If the `path` is a directory, `recursive_mode` will be evaluated. If `recursive_mode` is
+    /// `RecursiveMode::Recursive` events will be delivered for all files in that tree. Otherwise
+    /// only the directory and its immediate children will be watched.
+    ///
+    /// If the `path` is a file, `recursive_mode` will be ignored and events will be delivered only
+    /// for the file.
+    ///
+    /// On some platforms, if the `path` is renamed or removed while being watched, behaviour may
+    /// be unexpected. See discussions in [#165] and [#166]. If less surprising behaviour is wanted
+    /// one may non-recursively watch the _parent_ directory as well and manage related events.
+    ///
+    /// [#165]: https://github.com/notify-rs/notify/issues/165
+    /// [#166]: https://github.com/notify-rs/notify/issues/166
+    fn watch_filtered(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        watch_filter: WatchFilter,
+    ) -> Result<()>;
 
     /// Stop watching a path.
     ///

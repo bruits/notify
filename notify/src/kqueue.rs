@@ -6,7 +6,7 @@
 
 use super::event::*;
 use super::{Config, Error, EventHandler, RecursiveMode, Result, Watcher};
-use crate::{unbounded, Receiver, Sender};
+use crate::{unbounded, Receiver, Sender, WatchFilter};
 use kqueue::{EventData, EventFilter, FilterFlag, Ident};
 use std::collections::HashMap;
 use std::env;
@@ -436,7 +436,12 @@ impl Watcher for KqueueWatcher {
         Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch_filtered(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        _watch_filter: WatchFilter,
+    ) -> Result<()> {
         self.watch_inner(path, recursive_mode)
     }
 

@@ -89,7 +89,8 @@ pub use notify_types::debouncer_full::DebouncedEvent;
 use file_id::FileId;
 use notify::{
     event::{ModifyKind, RemoveKind, RenameMode},
-    Error, ErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, WatcherKind,
+    Error, ErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, WatchFilter, Watcher,
+    WatcherKind,
 };
 
 /// The set of requirements for watcher debounce event handling functions.
@@ -279,13 +280,11 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             return;
         }
 
-        let path = match event.paths.first() {
-            Some(path) => path,
-            None => {
-                log::info!("skipping event with no paths: {event:?}");
-                return;
-            }
-        };
+        if event.paths.is_empty() {
+            log::warn!("add_event: Skipping event with empty paths array");
+            return;
+        }
+        let path = &event.paths[0];
 
         match &event.kind {
             EventKind::Create(_) => {
@@ -596,7 +595,17 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
         path: impl AsRef<Path>,
         recursive_mode: RecursiveMode,
     ) -> notify::Result<()> {
-        self.watcher.watch(path.as_ref(), recursive_mode)?;
+        self.watch_filtered(path, recursive_mode, WatchFilter::accept_all())
+    }
+
+    pub fn watch_filtered(
+        &mut self,
+        path: impl AsRef<Path>,
+        recursive_mode: RecursiveMode,
+        watch_filter: WatchFilter,
+    ) -> notify::Result<()> {
+        self.watcher
+            .watch_filtered(path.as_ref(), recursive_mode, watch_filter)?;
         self.add_root(path.as_ref(), recursive_mode);
         Ok(())
     }
