@@ -16,7 +16,8 @@
 
 use crate::event::*;
 use crate::{
-    unbounded, Config, Error, EventHandler, RecursiveMode, Result, Sender, WatchFilter, Watcher,
+    unbounded, Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, WatchFilter,
+    Watcher,
 };
 use fsevent_sys as fs;
 use fsevent_sys::core_foundation as cf;
@@ -276,8 +277,13 @@ impl<'a> FsEventPathsMut<'a> {
 }
 
 impl PathsMut for FsEventPathsMut<'_> {
-    fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.0.append_path(path, recursive_mode)
+    fn add(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        watch_filter: WatchFilter,
+    ) -> Result<()> {
+        self.0.append_path(path, recursive_mode, watch_filter)
     }
 
     fn remove(&mut self, path: &Path) -> Result<()> {

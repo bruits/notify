@@ -293,6 +293,28 @@ pub enum WatcherKind {
     NullWatcher,
 }
 
+/// Providing methods for adding and removing paths to watch.
+///
+/// `Box<dyn PathsMut>` is created by [`Watcher::paths_mut`]. See its documentation for more.
+pub trait PathsMut {
+    /// Add a new path to watch. See [`Watcher::watch`] for more.
+    fn add(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        watch_filter: WatchFilter,
+    ) -> Result<()>;
+
+    /// Remove a path from watching. See [`Watcher::unwatch`] for more.
+    fn remove(&mut self, path: &Path) -> Result<()>;
+
+    /// Ensure added/removed paths are applied.
+    ///
+    /// The behaviour of dropping a [`PathsMut`] without calling [`commit`] is unspecified.
+    /// The implementation is free to ignore the changes or not, and may leave the watcher in a started or stopped state.
+    fn commit(self: Box<Self>) -> Result<()>;
+}
+
 type FilterFn = dyn Fn(&Path) -> bool + Send + Sync;
 /// Path filter to limit what gets watched.
 #[derive(Clone)]
@@ -406,7 +428,12 @@ pub trait Watcher {
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
         struct DefaultPathsMut<'a, T: ?Sized>(&'a mut T);
         impl<'a, T: Watcher + ?Sized> PathsMut for DefaultPathsMut<'a, T> {
-            fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+            fn add(
+                &mut self,
+                path: &Path,
+                recursive_mode: RecursiveMode,
+                _: WatchFilter,
+            ) -> Result<()> {
                 self.0.watch(path, recursive_mode)
             }
             fn remove(&mut self, path: &Path) -> Result<()> {
@@ -595,8 +622,8 @@ mod tests {
         // start watching a and b
         {
             let mut watcher_paths = watcher.paths_mut();
-            watcher_paths.add(&dir_a, RecursiveMode::Recursive)?;
-            watcher_paths.add(&dir_b, RecursiveMode::Recursive)?;
+            watcher_paths.add(&dir_a, RecursiveMode::Recursive, WatchFilter::accept_all())?;
+            watcher_paths.add(&dir_b, RecursiveMode::Recursive, WatchFilter::accept_all())?;
             watcher_paths.commit()?;
         }
 
