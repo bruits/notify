@@ -5,8 +5,8 @@
 //! will return events for the directory itself, and for files inside the directory.
 
 use super::event::*;
-use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, WatchFilter, Watcher};
-use crate::{bounded, unbounded, BoundSender, Receiver, Sender};
+use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, Watcher};
+use crate::{bounded, unbounded, BoundSender, Receiver, Sender, WatchFilter};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use std::collections::HashMap;
@@ -64,13 +64,11 @@ fn add_watch_by_event(
     watches: &HashMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool, WatchFilter)>,
     add_watches: &mut Vec<(PathBuf, WatchFilter)>,
 ) {
-    if let Some(ref path) = *path {
-        if event.mask.contains(EventMask::ISDIR) {
-            if let Some(parent_path) = path.parent() {
-                if let Some(&(_, _, is_recursive, _, ref filter)) = watches.get(parent_path) {
-                    if is_recursive {
-                        add_watches.push((path.to_owned(), filter.clone()));
-                    }
+    if event.mask.contains(EventMask::ISDIR) {
+        if let Some(parent_path) = path.parent() {
+            if let Some(&(_, _, is_recursive, _, ref filter)) = watches.get(parent_path) {
+                if is_recursive {
+                    add_watches.push((path.to_owned(), filter.clone()));
                 }
             }
         }
@@ -79,7 +77,7 @@ fn add_watch_by_event(
 
 #[inline]
 fn remove_watch_by_event(
-    path: &Option<PathBuf>,
+    path: &PathBuf,
     watches: &HashMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool, WatchFilter)>,
     remove_watches: &mut Vec<PathBuf>,
 ) {
@@ -310,21 +308,10 @@ impl EventLoop {
                                 remove_watch_by_event(&path, &self.watches, &mut remove_watches);
                             }
                             if event.mask.contains(EventMask::DELETE_SELF) {
-                                let remove_kind = match &path {
-                                    Some(watched_path) => {
-                                        let current_watch = self.watches.get(watched_path);
-                                        match current_watch {
-                                            Some(&(_, _, _, true, _)) => RemoveKind::Folder,
-                                            Some(&(_, _, _, false, _)) => RemoveKind::File,
-                                            None => RemoveKind::Other,
-                                        }
-                                    }
-                                    None => {
-                                        log::trace!(
-                                            "No patch for DELETE_SELF event, may be a bug?"
-                                        );
-                                        RemoveKind::Other
-                                    }
+                                let remove_kind = match self.watches.get(&path) {
+                                    Some(&(_, _, _, true, _)) => RemoveKind::Folder,
+                                    Some(&(_, _, _, false, _)) => RemoveKind::File,
+                                    None => RemoveKind::Other,
                                 };
                                 evs.push(
                                     Event::new(EventKind::Remove(remove_kind))
@@ -398,8 +385,8 @@ impl EventLoop {
             self.remove_watch(path, true).ok();
         }
 
-        for path in add_watches {
-            if let Err(add_watch_error) = self.add_watch(path, true, false) {
+        for (path, filter) in add_watches {
+            if let Err(add_watch_error) = self.add_watch(path, true, false, filter) {
                 // The handler should be notified if we have reached the limit.
                 // Otherwise, the user might expect that a recursive watch
                 // is continuing to work correctly, but it's not.
@@ -412,9 +399,6 @@ impl EventLoop {
                     break;
                 }
             }
-
-        for (path, filter) in add_watches {
-            self.add_watch(path, true, false, filter).ok();
         }
     }
 
@@ -818,4 +802,4 @@ mod tests {
             &events[..LOG_LEN.min(events_len)]
         );
     }
-}}
+}
